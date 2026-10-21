@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-cli"
+version = "0.2.0"
+description = "Terminal chat client for NEXUS AI Server"
+requires-python = ">=3.9"
+dependencies = ["rich>=13", "prompt_toolkit>=3.0.36"]
+
+[project.scripts]
+nexus = "nexus_cli.cli:main"
+
+[tool.setuptools]
+packages = ["nexus_cli"]
