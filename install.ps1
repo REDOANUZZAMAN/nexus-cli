@@ -1,11 +1,14 @@
 # NEXUS CLI installer for Windows (PowerShell 5.1+).
 #   irm https://raw.githubusercontent.com/REDOANUZZAMAN/nexus-cli/main/install.ps1 | iex
-# Installs into %USERPROFILE%\.nexus\cli (its own Python environment) and adds
-# %USERPROFILE%\.nexus\bin to your PATH. Installs Python with winget if it's missing.
-# Options (env vars): NEXUS_VERSION, NEXUS_WHEEL (local file or URL).
+# One command does everything: finds Python (or downloads a private copy with uv if there is
+# none / it is unusable), installs into %USERPROFILE%\.nexus\cli, adds %USERPROFILE%\.nexus\bin
+# to your PATH, then runs `nexus setup` the first time.
+# Options (env vars): NEXUS_VERSION, NEXUS_WHEEL (local file or URL), NEXUS_NO_SETUP=1.
 
 & {
     $ErrorActionPreference = 'Stop'
+    # Older Windows 10 PowerShell defaults to TLS 1.0, which GitHub refuses.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
     $version = if ($env:NEXUS_VERSION) { $env:NEXUS_VERSION } else { '0.2.0' }
     $repo = 'REDOANUZZAMAN/nexus-cli'
     $wheel = if ($env:NEXUS_WHEEL) { $env:NEXUS_WHEEL } else {
@@ -36,30 +39,42 @@
         return $null
     }
 
-    $py = Find-Python
-    if (-not $py) {
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Write-Host '  Python not found, installing it with winget...' -ForegroundColor DarkGray
-            winget install -e --id Python.Python.3.12 --scope user --silent --accept-package-agreements --accept-source-agreements | Out-Null
-            $py = Find-Python
-        }
-        if (-not $py) {
-            Write-Host 'NEXUS CLI needs Python 3.9 or newer.' -ForegroundColor Red
-            Write-Host 'Install it from https://www.python.org/downloads/ (tick "Add Python to PATH"), then run this again.'
-            return
-        }
-    }
-    $pyExe = $py[0]; $pyArgs = @($py | Select-Object -Skip 1)
-    Write-Host "  using $(& $pyExe @pyArgs --version 2>&1)" -ForegroundColor DarkGray
-
-    # 1. A private Python environment
+    # 1. A private Python environment: the Python already on this PC, or one uv downloads.
     if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
     New-Item -ItemType Directory -Force $root | Out-Null
-    & $pyExe @pyArgs -m venv $installDir
-    if ($LASTEXITCODE -ne 0) { Write-Host "Couldn't create a Python environment." -ForegroundColor Red; return }
+    $venvPy = "$installDir\Scripts\python.exe"
+    $py = Find-Python
+    if ($py) {
+        $pyExe = $py[0]; $pyArgs = @($py | Select-Object -Skip 1)
+        Write-Host "  using $(& $pyExe @pyArgs --version 2>&1)" -ForegroundColor DarkGray
+        try { & $pyExe @pyArgs -m venv $installDir 2>&1 | Out-Null } catch { }
+        if (-not (Test-Path $venvPy)) { if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir } }
+    }
+    if (-not (Test-Path $venvPy)) {
+        Write-Host '  no ready-to-use Python here, downloading a private copy (one time, ~40 MB)...' -ForegroundColor DarkGray
+        $uvDir = Join-Path $root 'uv'
+        $uv = Join-Path $uvDir 'uv.exe'
+        if (-not (Test-Path $uv)) {
+            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+            $zip = Join-Path $env:TEMP 'nexus-uv.zip'
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -UseBasicParsing "https://github.com/astral-sh/uv/releases/latest/download/uv-$arch-pc-windows-msvc.zip" -OutFile $zip
+                Expand-Archive -Force $zip $uvDir
+            } catch { }
+            Remove-Item -Force $zip -ErrorAction SilentlyContinue
+        }
+        if (-not (Test-Path $uv)) {
+            Write-Host "Couldn't download Python. Check your internet connection and try again." -ForegroundColor Red; return
+        }
+        try { & $uv venv --quiet --seed --python 3.12 $installDir 2>&1 | Out-Null } catch { }
+        if (-not (Test-Path $venvPy)) {
+            Write-Host "Couldn't create a Python environment. Check your internet connection and try again." -ForegroundColor Red; return
+        }
+    }
 
     Write-Host '  downloading...' -ForegroundColor DarkGray
-    & "$installDir\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check --upgrade $wheel
+    & $venvPy -m pip install --quiet --disable-pip-version-check --upgrade $wheel
     if ($LASTEXITCODE -ne 0) { Write-Host 'Download/install failed. Check your internet connection and try again.' -ForegroundColor Red; return }
 
     # 2. A small `nexus` launcher in .nexus\bin, and that folder on the user PATH
@@ -74,9 +89,13 @@
     if (($env:Path -split ';') -notcontains $binDir) { $env:Path = "$binDir;$env:Path" }
 
     Write-Host "OK - installed $(& "$installDir\Scripts\nexus.exe" --version)" -ForegroundColor Green
+
+    # 3. First run: connect to the server right away.
+    if (-not $env:NEXUS_NO_SETUP -and -not (Test-Path (Join-Path $root 'config.json'))) {
+        Write-Host ''
+        & "$installDir\Scripts\nexus.exe" setup
+    }
     Write-Host ''
-    Write-Host 'Next:'
-    Write-Host '  nexus setup   ' -NoNewline; Write-Host 'connect to your NEXUS server (address + API key from the app)' -ForegroundColor DarkGray
-    Write-Host '  nexus         ' -NoNewline; Write-Host 'start chatting' -ForegroundColor DarkGray
-    Write-Host '  (other open terminals need restarting to find "nexus")' -ForegroundColor DarkGray
+    Write-Host 'Start chatting:  ' -NoNewline; Write-Host 'nexus' -ForegroundColor White
+    Write-Host '  Change server later with: nexus setup   (other open windows need restarting to find "nexus")' -ForegroundColor DarkGray
 }

@@ -5,7 +5,7 @@ in a Claude Code / Gemini CLI style interface.
 
 ## Install
 
-**macOS / Linux**
+**macOS / Linux / Android (Termux)**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/REDOANUZZAMAN/nexus-cli/main/install.sh | bash
 ```
@@ -15,13 +15,13 @@ curl -fsSL https://raw.githubusercontent.com/REDOANUZZAMAN/nexus-cli/main/instal
 irm https://raw.githubusercontent.com/REDOANUZZAMAN/nexus-cli/main/install.ps1 | iex
 ```
 
-Needs Python 3.9+ (the Windows installer installs it with winget if missing). Everything goes into
-`~/.nexus/cli`, its own Python environment, so nothing else on your computer is touched.
-
-Then:
+That one command does everything: if the computer has no usable Python, it downloads a private
+copy (via [uv](https://github.com/astral-sh/uv)); it installs into `~/.nexus/cli` so nothing else on
+your computer is touched, puts `nexus` on your PATH, and the first time asks for the server address
+and API key shown in the NEXUS app. After that:
 ```
-nexus setup     # server address shown in the NEXUS app + API key
 nexus           # start chatting
+nexus setup     # change server address / API key
 ```
 Your computer and the phone must be on the same Wi-Fi, with the NEXUS server in **LAN** mode.
 
