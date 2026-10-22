@@ -36,15 +36,15 @@
         $local = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1
         if ($local -and (Test-Python $local.FullName @())) { return @($local.FullName) }
-        return $null
+        return
     }
 
     # 1. A private Python environment: the Python already on this PC, or one uv downloads.
     if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
     New-Item -ItemType Directory -Force $root | Out-Null
     $venvPy = "$installDir\Scripts\python.exe"
-    $py = Find-Python
-    if ($py) {
+    $py = @(Find-Python)  # @() keeps a one-item result an array (PowerShell unrolls it otherwise)
+    if ($py.Count -gt 0) {
         $pyExe = $py[0]; $pyArgs = @($py | Select-Object -Skip 1)
         Write-Host "  using $(& $pyExe @pyArgs --version 2>&1)" -ForegroundColor DarkGray
         try { & $pyExe @pyArgs -m venv $installDir 2>&1 | Out-Null } catch { }
