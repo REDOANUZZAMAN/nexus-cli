@@ -28,6 +28,28 @@ main() {
   fetch() {  # fetch URL → stdout
     if have curl; then curl -fsSL "$1"; elif have wget; then wget -qO- "$1"; else return 1; fi
   }
+  # spin LABEL CMD... → runs CMD quietly with an animated line, then ✓ LABEL (or returns its error)
+  spin() {
+    local label="$1"; shift
+    if [ ! -t 1 ]; then step "$label…"; "$@" >/dev/null 2>&1; return; fi
+    "$@" >/dev/null 2>&1 &
+    local pid=$! i=0 rc=0 start=$SECONDS
+    local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+    printf '\033[?25l'
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r  %s%s%s %s %s%ss%s' "$violet" "${frames[i % 10]}" "$reset" "$label" "$dim" $((SECONDS - start)) "$reset"
+      i=$((i + 1)); sleep 0.1
+    done
+    wait "$pid" || rc=$?
+    printf '\r\033[K\033[?25h'
+    [ "$rc" -eq 0 ] && printf '  %s✓%s %s\n' "$green" "$reset" "$label"
+    return "$rc"
+  }
+  install_uv() {
+    fetch https://astral.sh/uv/install.sh |
+      env UV_INSTALL_DIR="$uv_dir" UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh
+  }
+  trap 'printf "\033[?25h"' EXIT
 
   say "${violet}${bold}✻ Installing NEXUS CLI v$version${reset}"
   mkdir -p "$root"
@@ -35,8 +57,7 @@ main() {
   # Termux (Android): its own package manager, no uv builds — just make sure python is there.
   if [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *com.termux* ]]; then
     if ! have python; then
-      step "installing Python (Termux)…"
-      pkg install -y python >/dev/null 2>&1 || fail "Couldn't install Python. Run: pkg update && pkg install python, then try again."
+      spin "installing Python (Termux)" pkg install -y python || fail "Couldn't install Python. Run: pkg update && pkg install python, then try again."
     fi
   fi
 
@@ -57,22 +78,20 @@ main() {
 
   # 2. No usable Python (missing, too old, or no venv/pip like stock Ubuntu) → let uv fetch one.
   if [ -z "$ok" ]; then
-    step "no ready-to-use Python here, downloading a private copy (one time, ~40 MB)…"
+    step "no ready-to-use Python here, downloading a private copy (one time, ~40 MB)"
     local uv="$uv_dir/uv"
     if [ ! -x "$uv" ]; then
-      fetch https://astral.sh/uv/install.sh |
-        env UV_INSTALL_DIR="$uv_dir" UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh >/dev/null 2>&1 ||
+      spin "downloading Python installer" install_uv ||
         fail "Couldn't download the Python installer. Check your internet connection and try again."
     fi
     [ -x "$uv" ] || fail "Couldn't set up Python on this machine. Install Python 3.9+ yourself, then run this again."
     rm -rf "$install_dir"
-    "$uv" venv --quiet --seed --python 3.12 "$install_dir" >/dev/null 2>&1 ||
+    spin "downloading Python 3.12" "$uv" venv --quiet --seed --python 3.12 "$install_dir" ||
       fail "Couldn't create a Python environment. Check your internet connection and try again."
   fi
 
   # 3. Install NEXUS CLI into that private environment.
-  step "downloading NEXUS CLI…"
-  "$install_dir/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade "$wheel" ||
+  spin "downloading NEXUS CLI" "$install_dir/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade "$wheel" ||
     fail "Download/install failed. Check your internet connection and try again."
 
   # 4. Put `nexus` on PATH.

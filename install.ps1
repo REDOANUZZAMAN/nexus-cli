@@ -19,6 +19,62 @@
 
     Write-Host "* Installing NEXUS CLI v$version" -ForegroundColor Magenta
 
+    # --- terminal animation (plain ASCII so every Windows console font can draw it) ---
+    $fancy = -not [Console]::IsOutputRedirected
+    function Show-Line($text) { Write-Host -NoNewline ("`r" + $text.PadRight([Math]::Max(0, [Console]::BufferWidth - 1))) }
+    function Get-Bounce($i) {  # [   ===      ] moving back and forth
+        $w = 14; $span = $w - 3; $pos = $i % (2 * $span); if ($pos -gt $span) { $pos = 2 * $span - $pos }
+        '[' + (' ' * $pos) + '===' + (' ' * ($span - $pos)) + ']'
+    }
+    function Get-Bar($frac) { $w = 24; $n = [int]([Math]::Floor($frac * $w)); '[' + ('#' * $n) + ('-' * ($w - $n)) + ']' }
+    function Show-Done($label) { if ($fancy) { Show-Line "  [OK] $label"; Write-Host '' } else { Write-Host "  [OK] $label" } }
+
+    # Runs a program quietly with an animated line; returns its exit code.
+    function Invoke-Quiet($label, $exe, [string[]]$argv) {
+        $q = $argv | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }
+        $log = Join-Path $env:TEMP 'nexus-install'
+        try {
+            $p = Start-Process -FilePath $exe -ArgumentList ($q -join ' ') -NoNewWindow -PassThru `
+                -RedirectStandardOutput "$log.out.txt" -RedirectStandardError "$log.err.txt"
+        } catch { return 1 }
+        $null = $p.Handle  # PowerShell 5.1 loses ExitCode unless the handle is opened early
+        $sw = [Diagnostics.Stopwatch]::StartNew(); $i = 0
+        if (-not $fancy) { Write-Host "  $label..." }
+        while (-not $p.HasExited) {
+            if ($fancy) { Show-Line ("  {0} {1}  {2}s" -f (Get-Bounce $i), $label, [int]$sw.Elapsed.TotalSeconds) }
+            $i++; Start-Sleep -Milliseconds 100
+        }
+        $p.WaitForExit()
+        if ($p.ExitCode -eq 0) { Show-Done $label } elseif ($fancy) { Show-Line ''; Write-Host -NoNewline "`r" }
+        return $p.ExitCode
+    }
+
+    # Downloads a file with a real progress bar: [#####-----]  45%  9.1 / 20.3 MB  3.2 MB/s
+    function Get-File($label, $url, $dest) {
+        $resp = [Net.WebRequest]::Create($url).GetResponse()
+        try {
+            $total = $resp.ContentLength; $in = $resp.GetResponseStream(); $out = [IO.File]::Create($dest)
+            try {
+                $buf = New-Object byte[] 65536; $done = 0; $i = 0; $last = -1000
+                $sw = [Diagnostics.Stopwatch]::StartNew()
+                if (-not $fancy) { Write-Host "  $label..." }
+                while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                    $out.Write($buf, 0, $n); $done += $n
+                    if ($fancy -and $sw.ElapsedMilliseconds - $last -ge 100) {
+                        $last = $sw.ElapsedMilliseconds; $i++
+                        $mb = $done / 1MB; $speed = $mb / [Math]::Max(0.1, $sw.Elapsed.TotalSeconds)
+                        if ($total -gt 0) {
+                            Show-Line ("  {0} {1,3}%  {2}  {3:N1} / {4:N1} MB  {5:N1} MB/s" -f (Get-Bar ($done / $total)), [int](100 * $done / $total), $label, $mb, ($total / 1MB), $speed)
+                        } else {
+                            Show-Line ("  {0} {1}  {2:N1} MB  {3:N1} MB/s" -f (Get-Bounce $i), $label, $mb, $speed)
+                        }
+                    }
+                }
+            } finally { $out.Close(); $in.Close() }
+        } finally { $resp.Close() }
+        Show-Done $label
+    }
+
     function Test-Python($exe, $extra) {
         try {
             & $exe @extra -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null | Out-Null
@@ -51,7 +107,7 @@
         if (-not (Test-Path $venvPy)) { if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir } }
     }
     if (-not (Test-Path $venvPy)) {
-        Write-Host '  no ready-to-use Python here, downloading a private copy (one time, ~40 MB)...' -ForegroundColor DarkGray
+        Write-Host '  no ready-to-use Python here, downloading a private copy (one time, ~40 MB)' -ForegroundColor DarkGray
         $uvDir = Join-Path $root 'uv'
         $uv = Join-Path $uvDir 'uv.exe'
         if (-not (Test-Path $uv)) {
@@ -59,23 +115,22 @@
             $zip = Join-Path $env:TEMP 'nexus-uv.zip'
             try {
                 $ProgressPreference = 'SilentlyContinue'
-                Invoke-WebRequest -UseBasicParsing "https://github.com/astral-sh/uv/releases/latest/download/uv-$arch-pc-windows-msvc.zip" -OutFile $zip
+                Get-File 'downloading Python installer' "https://github.com/astral-sh/uv/releases/latest/download/uv-$arch-pc-windows-msvc.zip" $zip
                 Expand-Archive -Force $zip $uvDir
-            } catch { }
+            } catch { if ($fancy) { Write-Host '' } }
             Remove-Item -Force $zip -ErrorAction SilentlyContinue
         }
         if (-not (Test-Path $uv)) {
             Write-Host "Couldn't download Python. Check your internet connection and try again." -ForegroundColor Red; return
         }
-        try { & $uv venv --quiet --seed --python 3.12 $installDir 2>&1 | Out-Null } catch { }
+        $null = Invoke-Quiet 'downloading Python 3.12' $uv @('venv', '--quiet', '--seed', '--python', '3.12', $installDir)
         if (-not (Test-Path $venvPy)) {
             Write-Host "Couldn't create a Python environment. Check your internet connection and try again." -ForegroundColor Red; return
         }
     }
 
-    Write-Host '  downloading...' -ForegroundColor DarkGray
-    & $venvPy -m pip install --quiet --disable-pip-version-check --upgrade $wheel
-    if ($LASTEXITCODE -ne 0) { Write-Host 'Download/install failed. Check your internet connection and try again.' -ForegroundColor Red; return }
+    $rc = Invoke-Quiet 'downloading NEXUS CLI' $venvPy @('-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--upgrade', $wheel)
+    if ($rc -ne 0) { Write-Host 'Download/install failed. Check your internet connection and try again.' -ForegroundColor Red; return }
 
     # 2. A small `nexus` launcher in .nexus\bin, and that folder on the user PATH
     New-Item -ItemType Directory -Force $binDir | Out-Null
